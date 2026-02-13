@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  # Session storage service (already running standalone, but included for orchestration)
+  session-storage:
+    build: ./session-storage-service
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/claude-sessions:/var/claude-sessions
+    environment:
+      - NODE_ENV=development
+    networks:
+      - claude-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Container 1: fly_achensee_customer (Governor + 3 Specialists)
+  customer-comm:
+    build:
+      context: .
+      dockerfile: test-containers/fly_achensee_customer/Dockerfile
+    environment:
+      - SESSION_ID=test-customer-${TIMESTAMP:-001}
+      - SESSION_SERVICE_URL=http://session-storage:9000
+      - GMAIL_MCP_URL=${GMAIL_MCP_URL:-https://gm.mcp.metamate.community/}
+      - BOOKING_MCP_URL=${BOOKING_MCP_URL:-https://tf.mcp.flyachensee.metamate.community/}
+      - PYTHONPATH=/app/project/src
+    depends_on:
+      session-storage:
+        condition: service_healthy
+    networks:
+      - claude-network
+    volumes:
+      - /root/software/fly_achensee_customer:/app/project:ro
+    restart: unless-stopped
+
+  # Container 2: email_solver (5-node LangGraph pipeline)
+  email-solver:
+    build:
+      context: .
+      dockerfile: test-containers/email_solver/Dockerfile
+    environment:
+      - SESSION_ID=test-email-${TIMESTAMP:-001}
+      - SESSION_SERVICE_URL=http://session-storage:9000
+      - GMAIL_MCP_URL=${GMAIL_MCP_URL:-https://gm.mcp.metamate.community/}
+      - BOOKING_MCP_URL=${BOOKING_MCP_URL:-https://tf.mcp.flyachensee.metamate.community/}
+      - AZURE_INFERENCE_ENDPOINT=${AZURE_INFERENCE_ENDPOINT}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - PYTHONPATH=/app/project/src
+    depends_on:
+      session-storage:
+        condition: service_healthy
+    networks:
+      - claude-network
+    volumes:
+      - /root/software/email_solver:/app/project:ro
+    restart: unless-stopped
+
+  # Container 3: fly_achensee_claude (Claude Code CLI)
+  claude-cli:
+    build:
+      context: .
+      dockerfile: test-containers/fly_achensee_claude/Dockerfile
+    environment:
+      - SESSION_ID=test-claude-${TIMESTAMP:-001}
+      - SESSION_SERVICE_URL=http://session-storage:9000
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      session-storage:
+        condition: service_healthy
+    networks:
+      - claude-network
+    volumes:
+      - /root/software/fly_achensee_claude:/app/workspace
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # Dashboard (for monitoring sessions)
+  dashboard:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro
+    depends_on:
+      - session-storage
+    networks:
+      - claude-network
+    restart: unless-stopped
+
+networks:
+  claude-network:
+    driver: bridge

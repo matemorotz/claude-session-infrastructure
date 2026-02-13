@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Session Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🤖 Claude Session Dashboard</h1>
+      <div class="stats">
+        <div class="stat">
+          <span class="label">Active Sessions:</span>
+          <span id="activeSessions" class="value">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Total Sessions:</span>
+          <span id="totalSessions" class="value">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">WebSocket:</span>
+          <span id="wsStatus" class="value status-disconnected">Disconnected</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="main-content">
+      <div class="sidebar">
+        <h2>Recent Sessions</h2>
+        <div id="sessionList" class="session-list">
+          <p class="empty">No sessions yet</p>
+        </div>
+      </div>
+
+      <div class="content">
+        <div id="noSessionView" class="no-session">
+          <h2>Welcome to Claude Session Dashboard</h2>
+          <p>Select a session from the sidebar or create a new one.</p>
+          <button onclick="createTestSession()" class="btn-primary">Create Test Session</button>
+        </div>
+
+        <div id="sessionView" class="session-view" style="display: none;">
+          <div class="session-header">
+            <h2 id="sessionTitle">Session Details</h2>
+            <button onclick="closeSession()" class="btn-secondary">Close</button>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" onclick="switchTab('state')">State</button>
+            <button class="tab" onclick="switchTab('actions')">Actions</button>
+            <button class="tab" onclick="switchTab('responses')">Responses</button>
+            <button class="tab" onclick="switchTab('goals')">Goals</button>
+            <button class="tab" onclick="switchTab('agents')">Agents</button>
+          </div>
+
+          <div class="tab-content">
+            <div id="tab-state" class="tab-pane active">
+              <pre id="stateContent" class="code-block">Loading...</pre>
+            </div>
+            <div id="tab-actions" class="tab-pane">
+              <div id="actionsContent" class="log-viewer">Loading...</div>
+            </div>
+            <div id="tab-responses" class="tab-pane">
+              <div id="responsesContent" class="log-viewer">Loading...</div>
+            </div>
+            <div id="tab-goals" class="tab-pane">
+              <div id="goalsContent">Loading...</div>
+            </div>
+            <div id="tab-agents" class="tab-pane">
+              <div id="agentsContent">Loading...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="live-feed">
+      <h3>Live Events 📡</h3>
+      <div id="liveFeed" class="feed-content"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = 'http://localhost:9000/api';
+    const WS_URL = 'ws://localhost:9000/ws';
+
+    let ws = null;
+    let currentSession = null;
+    let autoRefresh = null;
+
+    // Initialize
+    async function init() {
+      await loadStats();
+      await loadRecentSessions();
+      connectWebSocket();
+
+      // Auto-refresh every 5 seconds
+      setInterval(loadStats, 5000);
+    }
+
+    // WebSocket connection
+    function connectWebSocket() {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        console.log('[WebSocket] Connected');
+        document.getElementById('wsStatus').textContent = 'Connected';
+        document.getElementById('wsStatus').className = 'value status-connected';
+        addLiveEvent('system', 'WebSocket connected');
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        console.log('[WebSocket] Message:', msg);
+        handleWebSocketMessage(msg);
+      };
+
+      ws.onclose = () => {
+        console.log('[WebSocket] Disconnected');
+        document.getElementById('wsStatus').textContent = 'Disconnected';
+        document.getElementById('wsStatus').className = 'value status-disconnected';
+        addLiveEvent('system', 'WebSocket disconnected - reconnecting in 3s...');
+
+        // Reconnect after 3 seconds
+        setTimeout(connectWebSocket, 3000);
+      };
+
+      ws.onerror = (error) => {
+        console.error('[WebSocket] Error:', error);
+      };
+    }
+
+    // Handle WebSocket messages
+    function handleWebSocketMessage(msg) {
+      switch (msg.type) {
+        case 'session_created':
+          addLiveEvent('session', `Session created: ${msg.data.sessionId}`);
+          loadRecentSessions();
+          break;
+
+        case 'action':
+          addLiveEvent('action', `${msg.data.type}`);
+          if (currentSession === msg.sessionId) {
+            refreshCurrentTab();
+          }
+          break;
+
+        case 'response':
+          addLiveEvent('response', msg.data.type || 'Response');
+          if (currentSession === msg.sessionId) {
+            refreshCurrentTab();
+          }
+          break;
+
+        case 'state_updated':
+          addLiveEvent('state', 'State updated');
+          if (currentSession === msg.sessionId) {
+            loadSessionState(currentSession);
+          }
+          break;
+
+        case 'goal_added':
+          addLiveEvent('goal', `Goal added: ${msg.data.description}`);
+          if (currentSession === msg.sessionId) {
+            loadSessionGoals(currentSession);
+          }
+          break;
+
+        case 'agent_spawned':
+          addLiveEvent('agent', `Agent spawned: ${msg.data.type}`);
+          if (currentSession === msg.sessionId) {
+            loadSessionAgents(currentSession);
+          }
+          break;
+      }
+    }
+
+    // Add live event to feed
+    function addLiveEvent(type, message) {
+      const feed = document.getElementById('liveFeed');
+      const event = document.createElement('div');
+      event.className = `event event-${type}`;
+      event.innerHTML = `
+        <span class="time">${new Date().toLocaleTimeString()}</span>
+        <span class="type">${type}</span>
+        <span class="message">${message}</span>
+      `;
+
+      feed.insertBefore(event, feed.firstChild);
+
+      // Keep only last 50 events
+      while (feed.children.length > 50) {
+        feed.removeChild(feed.lastChild);
+      }
+    }
+
+    // Load stats
+    async function loadStats() {
+      try {
+        const response = await fetch(`${API_URL}/query/stats`);
+        const data = await response.json();
+
+        document.getElementById('activeSessions').textContent = data.active;
+        document.getElementById('totalSessions').textContent = data.total;
+      } catch (error) {
+        console.error('Error loading stats:', error);
+      }
+    }
+
+    // Load recent sessions
+    async function loadRecentSessions() {
+      try {
+        const response = await fetch(`${API_URL}/query/recent`);
+        const sessions = await response.json();
+
+        const list = document.getElementById('sessionList');
+
+        if (sessions.length === 0) {
+          list.innerHTML = '<p class="empty">No sessions yet</p>';
+          return;
+        }
+
+        list.innerHTML = sessions.map(s => `
+          <div class="session-item ${s.status}" onclick="openSession('${s.sessionId}')">
+            <div class="session-id">${s.sessionId}</div>
+            <div class="session-meta">
+              <span class="user">${s.userId}</span>
+              <span class="status">${s.status}</span>
+            </div>
+            <div class="session-time">${new Date(s.created).toLocaleString()}</div>
+          </div>
+        `).join('');
+      } catch (error) {
+        console.error('Error loading sessions:', error);
+      }
+    }
+
+    // Open session
+    async function openSession(sessionId) {
+      currentSession = sessionId;
+
+      document.getElementById('noSessionView').style.display = 'none';
+      document.getElementById('sessionView').style.display = 'block';
+      document.getElementById('sessionTitle').textContent = `Session: ${sessionId}`;
+
+      await loadSessionState(sessionId);
+    }
+
+    // Close session
+    function closeSession() {
+      currentSession = null;
+      document.getElementById('noSessionView').style.display = 'block';
+      document.getElementById('sessionView').style.display = 'none';
+    }
+
+    // Switch tab
+    function switchTab(tabName) {
+      // Update tab buttons
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      event.target.classList.add('active');
+
+      // Update tab content
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.getElementById(`tab-${tabName}`).classList.add('active');
+
+      // Load content based on tab
+      switch (tabName) {
+        case 'state':
+          loadSessionState(currentSession);
+          break;
+        case 'actions':
+          loadSessionActions(currentSession);
+          break;
+        case 'responses':
+          loadSessionResponses(currentSession);
+          break;
+        case 'goals':
+          loadSessionGoals(currentSession);
+          break;
+        case 'agents':
+          loadSessionAgents(currentSession);
+          break;
+      }
+    }
+
+    // Refresh current tab
+    function refreshCurrentTab() {
+      const activeTab = document.querySelector('.tab.active');
+      if (activeTab) {
+        activeTab.click();
+      }
+    }
+
+    // Load session state
+    async function loadSessionState(sessionId) {
+      try {
+        const response = await fetch(`${API_URL}/state/${sessionId}`);
+        const state = await response.json();
+        document.getElementById('stateContent').textContent = JSON.stringify(state, null, 2);
+      } catch (error) {
+        document.getElementById('stateContent').textContent = `Error: ${error.message}`;
+      }
+    }
+
+    // Load session actions
+    async function loadSessionActions(sessionId) {
+      try {
+        const response = await fetch(`${API_URL}/actions/${sessionId}?limit=50`);
+        const actions = await response.json();
+
+        const content = document.getElementById('actionsContent');
+        content.innerHTML = actions.map(a => `
+          <div class="log-entry">
+            <span class="seq">#${a.seq}</span>
+            <span class="time">${new Date(a.timestamp).toLocaleTimeString()}</span>
+            <span class="type">${a.type}</span>
+            <pre class="data">${JSON.stringify(a, null, 2)}</pre>
+          </div>
+        `).join('');
+      } catch (error) {
+        document.getElementById('actionsContent').innerHTML = `<p class="error">Error: ${error.message}</p>`;
+      }
+    }
+
+    // Load session responses
+    async function loadSessionResponses(sessionId) {
+      try {
+        const response = await fetch(`${API_URL}/actions/${sessionId}/responses`);
+        const responses = await response.json();
+
+        const content = document.getElementById('responsesContent');
+        content.innerHTML = responses.map(r => `
+          <div class="log-entry">
+            <span class="seq">#${r.seq}</span>
+            <span class="time">${new Date(r.timestamp).toLocaleTimeString()}</span>
+            <span class="type">${r.type}</span>
+            <pre class="data">${JSON.stringify(r, null, 2)}</pre>
+          </div>
+        `).join('');
+      } catch (error) {
+        document.getElementById('responsesContent').innerHTML = `<p class="error">Error: ${error.message}</p>`;
+      }
+    }
+
+    // Load session goals
+    async function loadSessionGoals(sessionId) {
+      try {
+        const response = await fetch(`${API_URL}/state/${sessionId}`);
+        const state = await response.json();
+
+        const content = document.getElementById('goalsContent');
+        content.innerHTML = state.goals.map(g => `
+          <div class="goal-item goal-${g.status}">
+            <div class="goal-header">
+              <span class="goal-id">${g.id}</span>
+              <span class="goal-status">${g.status}</span>
+              <span class="goal-priority">${g.priority || 'normal'}</span>
+            </div>
+            <div class="goal-description">${g.description}</div>
+          </div>
+        `).join('') || '<p class="empty">No goals</p>';
+      } catch (error) {
+        document.getElementById('goalsContent').innerHTML = `<p class="error">Error: ${error.message}</p>`;
+      }
+    }
+
+    // Load session agents
+    async function loadSessionAgents(sessionId) {
+      try {
+        const response = await fetch(`${API_URL}/state/${sessionId}`);
+        const state = await response.json();
+
+        const content = document.getElementById('agentsContent');
+        content.innerHTML = state.agents.spawned.map(a => `
+          <div class="agent-item agent-${a.status}">
+            <div class="agent-header">
+              <span class="agent-type">${a.type}</span>
+              <span class="agent-status">${a.status}</span>
+            </div>
+            <div class="agent-task">${a.task}</div>
+            <div class="agent-meta">
+              <span>ID: ${a.agentId}</span>
+              <span>Spawned: ${new Date(a.spawnedAt).toLocaleString()}</span>
+            </div>
+          </div>
+        `).join('') || '<p class="empty">No agents spawned</p>';
+      } catch (error) {
+        document.getElementById('agentsContent').innerHTML = `<p class="error">Error: ${error.message}</p>`;
+      }
+    }
+
+    // Create test session
+    async function createTestSession() {
+      const sessionId = `test-${Date.now().toString(36)}`;
+      const userId = 'test-user';
+
+      try {
+        const response = await fetch(`${API_URL}/sessions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId,
+            userId,
+            initial: {
+              source: { type: 'dashboard', action: 'create_test' },
+              input: {
+                type: 'prompt',
+                content: 'Test session created from dashboard'
+              },
+              config: {
+                model: 'claude-sonnet-4.5',
+                dangerouslySkipPermissions: true
+              }
+            }
+          })
+        });
+
+        const result = await response.json();
+        console.log('Test session created:', result);
+
+        addLiveEvent('system', `Test session created: ${sessionId}`);
+        await loadRecentSessions();
+        await openSession(sessionId);
+      } catch (error) {
+        console.error('Error creating test session:', error);
+        alert('Error creating test session: ' + error.message);
+      }
+    }
+
+    // Initialize on load
+    init();
+  </script>
+</body>
+</html>
