@@ -43,7 +43,28 @@ cd claude-session-infrastructure
 curl http://localhost:9000/health
 ```
 
-### 2. Run E2E Tests
+### 2. Clone Test Project Repositories
+
+The E2E tests require 3 test projects. Clone them to the expected locations:
+
+```bash
+# Navigate to parent directory
+cd /root/software  # or your preferred location
+
+# Clone test projects
+git clone https://github.com/matemorotz/fly_achensee_customer.git
+git clone https://github.com/matemorotz/email_solver.git
+git clone https://github.com/matemorotz/fly_achensee_claude.git
+```
+
+**Test Projects:**
+- **fly_achensee_customer** - Governor + 3 Specialists LangGraph architecture
+- **email_solver** - 5-node email processing pipeline
+- **fly_achensee_claude** - Claude Code CLI with governance
+
+These repositories include session integration wrappers (`src/main_with_session.py`) that demonstrate how to integrate the hook agent into your applications.
+
+### 3. Run E2E Tests
 
 ```bash
 # Run complete test suite (builds 3 containers, starts services, validates)
@@ -53,7 +74,9 @@ curl http://localhost:9000/health
 open http://localhost:3000
 ```
 
-### 3. Integrate Your Application
+**Note:** Update volume paths in `docker-compose.test.yml` if you cloned the test projects to a different location than `/root/software/`.
+
+### 4. Integrate Your Application
 
 **Python (async):**
 ```python
@@ -136,9 +159,18 @@ await hookAgent.updateState({
 
 ### 4. Test Containers
 Three real-world applications containerized for E2E validation:
-1. **fly_achensee_customer** - Governor + 3 Specialists LangGraph architecture
-2. **email_solver** - 5-node email processing pipeline
-3. **fly_achensee_claude** - Claude Code CLI with governance
+
+1. **[fly_achensee_customer](https://github.com/matemorotz/fly_achensee_customer)** - Governor + 3 Specialists LangGraph architecture
+   - Multi-agent customer communication system
+   - Includes `src/main_with_session.py` wrapper for session integration
+
+2. **[email_solver](https://github.com/matemorotz/email_solver)** - 5-node email processing pipeline
+   - LangGraph email automation system
+   - Includes `src/main_with_session.py` wrapper for session integration
+
+3. **[fly_achensee_claude](https://github.com/matemorotz/fly_achensee_claude)** - Claude Code CLI with governance
+   - Business operations assistant with complete `.claude/` governance system
+   - Interactive Claude Code CLI container
 
 ---
 
